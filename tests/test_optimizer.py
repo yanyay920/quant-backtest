@@ -1,5 +1,6 @@
 """寻优与实验记录自测: python tests/test_optimizer.py
-覆盖: 实验记录去重、最优组合的选择规则、参数网格合法性、strategy.json 必需字段。
+覆盖: 实验记录去重、最优组合的选择规则 (任务书规则 + 样本内对照)、参数网格合法性、
+strategy.json 必需字段、三折切分、寻优汇总统计。
 """
 import json
 import os
@@ -10,8 +11,11 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from backtest.optimizer import (build_strategy_payload, export_strategy_json,  # noqa: E402
-                                iter_param_grid, select_best)
+from config import OUT_SAMPLE  # noqa: E402
+from backtest.data import load_benchmark  # noqa: E402
+from backtest.optimizer import (build_strategy_payload, build_summary, export_strategy_json,  # noqa: E402
+                                iter_param_grid, select_best, select_best_in_sample,
+                                split_out_sample)
 from backtest.records import COLUMNS, load_records, log_experiment  # noqa: E402
 
 
@@ -66,6 +70,74 @@ def test_select_best_rule():
     print("通过: 选最优的过滤条件与排序")
 
 
+def test_select_best_in_sample_rule():
+    rows = pd.DataFrame([
+        # 参数 A: 样本内夏普最高且条件满足 -> 应被选中 (尽管样本外夏普最低)
+        {"参数": "A", "样本内_夏普": 2.0, "样本内_交易次数": 20, "样本外_夏普": 0.1, "样本外_交易次数": 3},
+        # 参数 B: 样本内夏普更高, 但样本内交易次数不足 -> 应被过滤
+        {"参数": "B", "样本内_夏普": 3.0, "样本内_交易次数": 5, "样本外_夏普": 2.0, "样本外_交易次数": 30},
+        # 参数 C: 样本内夏普 <= 0 -> 应被过滤
+        {"参数": "C", "样本内_夏普": -0.5, "样本内_交易次数": 30, "样本外_夏普": 3.0, "样本外_交易次数": 30},
+        # 参数 D: 条件满足, 但样本内夏普低于 A (样本外夏普高于 A, 不能因为它被选中)
+        {"参数": "D", "样本内_夏普": 1.0, "样本内_交易次数": 12, "样本外_夏普": 2.5, "样本外_交易次数": 11},
+    ])
+    best = select_best_in_sample(rows)
+    assert best["参数"] == "A", "应在过滤后按样本内夏普降序选第一组, 完全不看样本外指标"
+
+    none_ok = rows.copy()
+    none_ok["样本内_夏普"] = 0.0
+    try:
+        select_best_in_sample(none_ok)
+        raise AssertionError("没有任何组合满足条件时应报错")
+    except ValueError:
+        pass
+    print("通过: 样本内对照选参的过滤条件与排序")
+
+
+def test_split_out_sample():
+    folds = split_out_sample(3)
+    assert len(folds) == 3, "应切成 3 段"
+
+    days = load_benchmark().index
+    out_days = days[(days >= pd.Timestamp(OUT_SAMPLE[0])) & (days <= pd.Timestamp(OUT_SAMPLE[1]))]
+    counts = [len(out_days[(out_days >= start) & (out_days <= end)]) for start, end in folds]
+    assert sum(counts) == len(out_days), "三段应合起来覆盖完整样本外"
+    assert max(counts) - min(counts) <= 1, f"每段交易日数相差不超过 1 天, 实际 {counts}"
+    for (s1, e1), (s2, e2) in zip(folds, folds[1:]):
+        assert e1 < s2, "三段互不重叠"
+    assert folds[0][0] == out_days[0] and folds[-1][1] == out_days[-1], "首尾应与样本外对齐"
+    print("通过: 三折切分互不重叠、覆盖完整样本外、段间交易日数相差 <= 1")
+
+
+def test_build_summary_stats():
+    def frame(strategy):
+        return pd.DataFrame([
+            {"策略": strategy, "参数": json.dumps({"fast": 10, "slow": 30}), "样本外_夏普": 1.0, "样本外_交易次数": 12},
+            {"策略": strategy, "参数": json.dumps({"fast": 20, "slow": 60}), "样本外_夏普": 3.0, "样本外_交易次数": 15},
+            {"策略": strategy, "参数": json.dumps({"fast": 5, "slow": 40}), "样本外_夏普": 2.0, "样本外_交易次数": 11},
+            {"策略": strategy, "参数": json.dumps({"fast": 30, "slow": 200}), "样本外_夏普": 0.5, "样本外_交易次数": 20},
+        ])
+
+    trend_results, meanrev_results = frame("trend"), frame("meanrev")
+    summary = build_summary([trend_results.iloc[1], meanrev_results.iloc[2]],
+                            {"trend": trend_results, "meanrev": meanrev_results})
+    assert list(summary["策略"]) == ["trend", "meanrev"]
+
+    top = summary.iloc[0]
+    assert top["组合数"] == 4
+    assert abs(top["样本外夏普_最大"] - 3.0) < 1e-9
+    assert abs(top["样本外夏普_中位数"] - 1.5) < 1e-9, "中位数应为 (1.0 + 2.0) / 2 = 1.5"
+    assert abs(top["样本外夏普_最小"] - 0.5) < 1e-9
+    assert json.loads(top["选中组合（JSON）"]) == {"fast": 20, "slow": 60}
+    assert top["选中组合的样本外夏普排名"] == "第1名 / 共4组"
+    assert top["选中组合的样本外卖出笔数"] == 15
+
+    second = summary.iloc[1]  # 选中的是样本外夏普 2.0 的一组, 比它高的只有 3.0 -> 第 2 名
+    assert second["选中组合的样本外夏普排名"] == "第2名 / 共4组"
+    assert second["选中组合的样本外卖出笔数"] == 11
+    print("通过: 寻优汇总的最大 / 中位数 / 最小值与排名计算")
+
+
 def test_param_grid():
     trend = iter_param_grid("trend")
     assert len(trend) == 29, f"trend 应有 29 组合, 实际 {len(trend)}"
@@ -74,6 +146,15 @@ def test_param_grid():
 
     meanrev = iter_param_grid("meanrev")
     assert len(meanrev) == 36, f"meanrev 应有 36 组合, 实际 {len(meanrev)}"
+
+    multifactor = iter_param_grid("multifactor")
+    assert len(multifactor) == 16, f"multifactor 应有 16 组合, 实际 {len(multifactor)}"
+    assert len({json.dumps(p, sort_keys=True) for p in multifactor}) == 16, "multifactor 组合不应重复"
+    assert all("weights" not in p and {"w_mom", "w_lowvol", "w_volume"} <= set(p)
+               for p in multifactor), "weights 应展开成三个独立权重参数"
+    assert ({(p["w_mom"], p["w_lowvol"], p["w_volume"]) for p in multifactor}
+            == {(1, 0, 0), (0.5, 0.5, 0), (0.5, 0.25, 0.25), (0.34, 0.33, 0.33)}), "权重组不符合任务书"
+    assert len(trend) + len(meanrev) + len(multifactor) == 81, "三个策略合计应有 81 组合"
     print("通过: 参数网格数量与 fast < slow 过滤")
 
 
@@ -98,6 +179,9 @@ def test_strategy_json_fields():
 if __name__ == "__main__":
     test_log_experiment_dedup()
     test_select_best_rule()
+    test_select_best_in_sample_rule()
+    test_split_out_sample()
+    test_build_summary_stats()
     test_param_grid()
     test_strategy_json_fields()
     print("\n全部通过")
