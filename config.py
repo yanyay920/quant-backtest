@@ -16,6 +16,9 @@ BENCHMARK_NAME = "沪深300"
 
 DATA_START, DATA_END = "2019-01-01", "2024-12-31"
 
+IN_SAMPLE = ("2019-01-01", "2022-12-31")   # 样本内: 用来调参
+OUT_SAMPLE = ("2023-01-01", "2024-12-31")  # 样本外: 只用来检验
+
 INITIAL_CAPITAL = 1_000_000   # 初始资金一百万元
 COMMISSION_RATE = 0.00025     # 佣金 万分之2.5 (买卖双向)
 COMMISSION_MIN = 5.0          # 佣金最低 5 元

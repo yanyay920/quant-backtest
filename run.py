@@ -10,6 +10,7 @@ from config import DATA_END, DATA_START, RECORDS_DIR
 from backtest.data import load_benchmark, load_universe
 from backtest.engine import run_backtest
 from backtest.metrics import compute_metrics
+from backtest.optimizer import evaluate_intervals
 from backtest.report import plot_nav, print_summary
 from strategies import STRATEGIES, build_strategy
 
@@ -37,18 +38,25 @@ def main(argv=None):
     ap.add_argument("--end", default=DATA_END, help="结束日期 YYYY-MM-DD")
     ap.add_argument("--codes", default="", help="只回测部分股票(逗号分隔), 默认全部十只")
     ap.add_argument("--no-plot", action="store_true", help="不生成净值曲线图")
+    ap.add_argument("--no-record", action="store_true", help="不写入实验记录")
     args = ap.parse_args(argv)
 
     try:
         strategy = build_strategy(args.strategy, parse_params(args.params))
         codes = [c for c in args.codes.split(",") if c] or None
-        result = run_backtest(strategy, load_universe(codes), args.start, args.end, bench=load_benchmark())
+        bench = load_benchmark()
+        universe = load_universe(codes)
+        result = run_backtest(strategy, universe, args.start, args.end, bench=bench)
     except (ValueError, FileNotFoundError) as e:
         raise SystemExit(f"错误: {e}")
 
     bench_metrics = compute_metrics(result.bench_nav)
     strat_metrics = compute_metrics(result.nav, result.trades)
     print_summary(result, strat_metrics, bench_metrics)
+
+    if not args.no_record and not codes:
+        evaluate_intervals(args.strategy, strategy.params, data=universe, bench=bench)
+        print(f"\n实验记录已更新: {os.path.join(RECORDS_DIR, '实验记录.csv')}")
 
     if not args.no_plot:
         tag = re.sub(r"[^0-9A-Za-z_.=-]+", "_", f"{args.strategy}_{args.params}_{args.start}_{args.end}")

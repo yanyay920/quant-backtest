@@ -11,14 +11,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backtest.engine import simulate_stock  # noqa: E402
 from strategies import build_strategy  # noqa: E402
 from strategies.meanrev import MeanReversion  # noqa: E402
+from strategies.multifactor import MultiFactor  # noqa: E402
 from strategies.trend import TrendFollowing  # noqa: E402
 
 
-def frame(closes, start="2024-01-02"):
+def frame(closes, start="2024-01-02", volume=None):
     closes = np.asarray(closes, dtype=float)
     idx = pd.bdate_range(start, periods=len(closes))
+    if volume is None:
+        volume = 1000
     return pd.DataFrame({"open": closes, "high": closes + 0.05, "low": closes - 0.05,
-                         "close": closes, "volume": 1000}, index=idx)
+                         "close": closes, "volume": volume}, index=idx)
 
 
 def zigzag(n=30):
@@ -119,6 +122,82 @@ def test_signal_to_next_open_trade():
     print("通过: 均值回复信号 -> 次日开盘成交")
 
 
+def mf_frame():
+    """多因子测试用行情: 前 100 天价格完全不变 (热身), 之后依次上涨 / 横盘 / 下跌 / 再上涨。
+
+    成交量始终小幅波动, 保证量能因子有定义; 价格在上涨段第 1 天就开始变化,
+    所以总分从序号 100 起才可能有效。
+    """
+    rng = np.random.default_rng(11)
+    n = 200
+    rets = np.zeros(n)
+    rets[100:115] = rng.normal(0.012, 0.004, 15)      # 上涨
+    rets[115:150] = rng.normal(0, 0.004, 35)          # 横盘
+    rets[150:185] = rng.normal(-0.012, 0.004, 35)     # 下跌
+    rets[185:] = rng.normal(0, 0.002, n - 185)        # 再次上涨
+    closes = np.empty(n)
+    closes[:100] = 10.0
+    closes[100:] = 10 * np.cumprod(1 + rets[100:])
+    volume = 1_000_000 + 200_000 * np.sin(np.arange(n) * 0.9)
+    return frame(closes, volume=volume)
+
+
+MF_PARAMS = {"lookback": 5, "zwin": 30, "w_mom": 1, "w_lowvol": 0, "w_volume": 0,
+             "enter": 1.0, "leave": 0.0}
+
+
+def test_multifactor_warmup_and_state():
+    df = mf_frame()
+    sig = MultiFactor(**MF_PARAMS).signals(df)
+    assert (sig.iloc[:100] == 0).all(), "数据不够算总分的头几天不开仓"
+    assert sig.iloc[100] == 1, "总分升过 enter (1.0) -> 想持有"
+    assert (sig.iloc[115:117] == 1).all(), "总分落在 leave(0) 与 enter(1) 之间 -> 保持持有"
+    assert sig.iloc[117] == 0, "总分跌破 leave (0) -> 想空仓"
+    assert (sig.iloc[117:185] == 0).all(), "卖出后总分未再升过 enter, 不会自动再买"
+    assert sig.iloc[185] == 1, "再次出现强势上涨 -> 再次买入"
+    print("通过: 多因子 热身期/买入/保持/卖出")
+
+
+def test_multifactor_flat_data_no_signal():
+    df = frame([10.0] * 200, volume=[1000.0] * 200)
+    sig = MultiFactor().signals(df)   # 价格和成交量都不动 -> 各因子标准差为 0
+    assert (sig == 0).all(), "标准差为 0 时不应产生信号, 也不能除零报错"
+    print("通过: 多因子 价格与成交量不变时不交易")
+
+
+def test_multifactor_bad_params():
+    df = mf_frame()
+    for bad in ({"enter": 0.0, "leave": 0.0}, {"enter": -0.5, "leave": 0.0},
+                {"w_mom": -0.1}, {"w_mom": 0, "w_lowvol": 0, "w_volume": 0},
+                {"lookback": 4}, {"zwin": 29}):
+        try:
+            MultiFactor(**bad).signals(df)
+            raise AssertionError(f"参数 {bad} 应报错")
+        except ValueError:
+            pass
+    try:
+        MultiFactor(foo=1)
+        raise AssertionError("未知参数应报错")
+    except ValueError:
+        pass
+    print("通过: 多因子非法参数会报错")
+
+
+def test_multifactor_no_lookahead():
+    rng = np.random.default_rng(3)
+    n = 240
+    closes = 10 * np.cumprod(1 + rng.normal(0.0005, 0.015, n))
+    volume = 1_000_000 * (1 + rng.uniform(-0.3, 0.3, n))
+    changed = closes.copy()
+    changed[180:] *= np.cumprod(1 + rng.normal(0, 0.05, n - 180))   # 只改动末尾 60 天
+    changed_volume = volume.copy()
+    changed_volume[180:] *= rng.uniform(0.5, 1.5, n - 180)
+    s1 = MultiFactor().signals(frame(closes, volume=volume))
+    s2 = MultiFactor().signals(frame(changed, volume=changed_volume))
+    assert (s1.iloc[:180] == s2.iloc[:180]).all(), "过去 180 天的信号不应受末尾价格/成交量变化影响"
+    print("通过: 多因子信号不使用未来数据")
+
+
 if __name__ == "__main__":
     test_trend_basic()
     test_meanrev_buy_hold_sell()
@@ -127,5 +206,9 @@ if __name__ == "__main__":
     test_meanrev_flat_price_no_signal()
     test_meanrev_bad_params()
     test_no_lookahead_in_signals()
+    test_multifactor_warmup_and_state()
+    test_multifactor_flat_data_no_signal()
+    test_multifactor_bad_params()
+    test_multifactor_no_lookahead()
     test_signal_to_next_open_trade()
     print("\n全部通过")
