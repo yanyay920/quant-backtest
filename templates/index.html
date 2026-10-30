@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>A股量化回测 · 绩效报告</title>
+<style>
+  body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; margin: 0 auto;
+         max-width: 1080px; padding: 24px; color: #222; background: #fafafa; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; border-left: 4px solid #2b6cb0;
+         padding-left: 8px; margin-top: 36px; }
+  section { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
+            padding: 16px 20px; margin-top: 16px; }
+  table.data { border-collapse: collapse; margin: 10px 0; font-size: 13px; }
+  table.data th, table.data td { border: 1px solid #cbd5e0; padding: 5px 10px;
+            text-align: right; white-space: nowrap; }
+  table.data th { background: #edf2f7; }
+  table.data td:first-child, table.data th:first-child { text-align: left; }
+  button { font-size: 15px; padding: 8px 18px; border: 0; border-radius: 6px;
+           background: #2b6cb0; color: #fff; cursor: pointer; }
+  button:disabled { background: #a0aec0; cursor: not-allowed; }
+  .hint { color: #718096; } .status { margin-left: 12px; font-weight: bold; }
+  .good { color: #2f855a; } .bad { color: #c53030; }
+  pre { background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+        padding: 12px; white-space: pre-wrap; font-size: 12.5px; }
+  img.chart { max-width: 100%; border: 1px solid #e2e8f0; border-radius: 6px; }
+  ul { line-height: 1.9; }
+</style>
+</head>
+<body>
+<h1>A股量化回测 · 绩效报告页</h1>
+
+<section>
+  <h2>一、概览</h2>
+  <table class="data">
+    <tr><th>回测数据范围</th><td>{{ overview.data_range }}</td></tr>
+    <tr><th>股票池</th><td style="text-align:left;white-space:normal">
+      {% for code, name in overview.stocks.items() %}{{ code }} {{ name }}{{ "、" if not loop.last }}{% endfor %}
+    </td></tr>
+    <tr><th>业绩基准</th><td>{{ overview.benchmark }}（买入持有）</td></tr>
+    <tr><th>样本内时段</th><td>{{ overview.in_sample }}</td></tr>
+    <tr><th>样本外时段</th><td>{{ overview.out_sample }}</td></tr>
+    <tr><th>初始资金</th><td>{{ "{:,}".format(overview.capital) }} 元</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>二、最优策略</h2>
+  {% if payload %}
+  <table class="data">
+    <tr><th>策略类型</th><td>{{ payload["策略类型"] }}</td></tr>
+    <tr><th>参数</th><td style="text-align:left">
+      {% for k, v in payload["参数"].items() %}{{ k }}={{ v }}{{ ", " if not loop.last }}{% endfor %}
+    </td></tr>
+    <tr><th>生成时间</th><td>{{ payload["生成时间"] }}</td></tr>
+  </table>
+
+  {% macro metric_table(m) %}
+    <table class="data">
+      <tr><th>指标</th><th>数值</th></tr>
+      {% for k in ["总收益", "年化收益", "最大回撤", "夏普比率", "胜率", "交易次数"] %}
+      <tr><td>{{ k }}</td><td>{{ m.get(k)|mfmt(k) }}</td></tr>
+      {% endfor %}
+    </table>
+  {% endmacro %}
+
+  <table><tr>
+    <td style="vertical-align:top"><b>样本内指标</b>{{ metric_table(payload["样本内指标"]) }}</td>
+    <td style="vertical-align:top"><b>样本外指标</b>{{ metric_table(payload["样本外指标"]) }}</td>
+  </tr></table>
+
+  <p><b>选参规则说明</b>：{{ payload["选择规则说明"] }}</p>
+  <p class="hint">{{ payload["selection_rule"] }}</p>
+
+  {% if payload["rolling_validation"] %}
+  {% set rv = payload["rolling_validation"] %}
+  <p><b>三折滚动验证</b>：
+    {% if rv["稳健"] %}<span class="good">稳健</span>
+    {% else %}<span class="bad">不稳健</span>{% endif %}
+    （三段策略总收益全部大于零才算稳健）</p>
+  <table class="data">
+    <tr><th>折</th><th>区间</th><th>交易日数</th><th>策略总收益</th><th>沪深300</th></tr>
+    {% for f in rv["各折"] %}
+    <tr><td>第{{ f["折"] }}折</td><td>{{ f["开始"] }} ~ {{ f["结束"] }}</td>
+        <td>{{ f["交易日数"] }}</td>
+        <td>{{ f["策略总收益"]|mfmt("总收益") }}</td>
+        <td>{{ f["基准总收益"]|mfmt("总收益") }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if payload["control_in_sample"] %}
+  {% set c = payload["control_in_sample"] %}
+  <p><b>样本内对照组</b>（按样本内夏普选参，不使用样本外信息）：
+     {{ c["策略类型"] }}
+     {% for k, v in c["参数"].items() %}{{ k }}={{ v }}{{ ", " if not loop.last }}{% endfor %}
+  </p>
+  <table><tr>
+    <td style="vertical-align:top"><b>样本内指标</b>{{ metric_table(c["样本内指标"]) }}</td>
+    <td style="vertical-align:top"><b>样本外指标</b>{{ metric_table(c["样本外指标"]) }}</td>
+  </tr></table>
+  {% endif %}
+  {% else %}
+  <p class="hint">尚未生成，请先点击运行下方“参数寻优”，或在命令行执行 optimize.py。</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>三、三策略回测</h2>
+  <p class="hint">对 trend / meanrev / multifactor 各用寻优汇总中的选中参数（缺失时用默认参数）
+     在全区间回测，只展示结果，不写入实验记录。</p>
+  <button id="btn-bt" onclick="runBacktest()">运行三策略回测</button>
+  <span class="status" id="bt-status"></span>
+  <div id="bt-result"></div>
+</section>
+
+<section id="sec-opt">
+  <h2>四、参数寻优</h2>
+  <p class="hint">执行与命令行 optimize.py --strategy all 相同的代码，在后台线程运行；
+     寻优会写入实验记录并刷新下方表格。</p>
+  <button id="btn-opt" onclick="startOptimize()">运行参数寻优</button>
+  <span class="status" id="opt-status"></span>
+  <pre id="opt-log" style="display:none"></pre>
+
+  <h3>对比结果</h3>
+  {% if tables.comparison %}{{ tables.comparison|safe }}
+  {% else %}<p class="hint">尚未生成，请先点击运行“参数寻优”。</p>{% endif %}
+
+  <h3>寻优汇总</h3>
+  {% if tables.summary %}{{ tables.summary|safe }}
+  {% else %}<p class="hint">尚未生成，请先点击运行“参数寻优”。</p>{% endif %}
+
+  <h3>实验记录（按样本外夏普排序的前 10 条<span id="rec-total">{% if tables.total is not none %}，共 {{ tables.total }} 条{% endif %}</span>）</h3>
+  {% if tables.top10 %}{{ tables.top10|safe }}
+  {% else %}<p class="hint">尚未生成，请先点击运行“参数寻优”。</p>{% endif %}
+</section>
+
+<section>
+  <h2>五、数据与口径说明</h2>
+  <h3>数据来源与清洗记录</h3>
+  {% if clean_log %}<pre>{{ clean_log }}</pre>
+  {% else %}<p class="hint">clean_log.txt 尚未生成。</p>{% endif %}
+
+  <h3>口径与局限</h3>
+  <ul>
+    <li>业绩基准为价格指数（不含分红），而个股使用前复权价格（已含分红送转），两者口径不完全一致。</li>
+    <li>策略空仓期间现金按零利息计，不计货币基金或逆回购收益。</li>
+    <li>样本内因数据起点限制，长窗口均线存在预热期，预热期内策略无法满仓运行；样本外预热由样本内数据延续，不存在该问题。</li>
+    <li>选参规则按任务书要求使用了样本外信息（按样本外夏普选参），存在过拟合风险。</li>
+    <li>三折滚动验证结果为“不稳健”时，样本外结论不应写满，不宜外推为未来收益预期。</li>
+  </ul>
+</section>
+
+<script>
+const METRIC_KEYS = ["总收益", "年化收益", "最大回撤", "夏普比率", "胜率", "交易次数"];
+
+async function runBacktest() {
+  const btn = document.getElementById("btn-bt"), st = document.getElementById("bt-status");
+  btn.disabled = true; st.textContent = "运行中…"; st.className = "status";
+  try {
+    const r = await fetch("/api/backtest", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || "未知错误");
+    let html = "<table class='data'><tr><th>名称</th><th>参数</th>";
+    METRIC_KEYS.forEach(k => html += "<th>" + k + "</th>");
+    html += "</tr>";
+    j.rows.forEach(row => {
+      html += "<tr><td>" + row.name + "</td><td style='text-align:left'>" + row.params + "</td>";
+      METRIC_KEYS.forEach(k => html += "<td>" + row.metrics[k] + "</td>");
+      html += "</tr>";
+    });
+    html += "</table><img class='chart' src='" + j.chart + "'>";
+    document.getElementById("bt-result").innerHTML = html;
+    st.textContent = "已完成（" + j.start + " ~ " + j.end + "）"; st.className = "status good";
+  } catch (e) {
+    st.textContent = "出错：" + e.message; st.className = "status bad";
+  } finally { btn.disabled = false; }
+}
+
+function optStatusText(j) {
+  if (j.state === "running") return "运行中… 已用时 " + j.elapsed + " 秒";
+  if (j.state === "done") return "已完成，耗时 " + j.elapsed + " 秒";
+  if (j.state === "error") return "出错：" + (j.error || "详见日志");
+  return "尚未运行";
+}
+
+async function startOptimize() {
+  const btn = document.getElementById("btn-opt");
+  btn.disabled = true;
+  const r = await fetch("/api/optimize", {method: "POST"});
+  const j = await r.json();
+  if (!j.ok) { document.getElementById("opt-status").textContent = j.error; btn.disabled = false; return; }
+  pollOptimize();
+}
+
+async function pollOptimize() {
+  const r = await fetch("/api/optimize/status");
+  const j = await r.json();
+  const st = document.getElementById("opt-status");
+  st.textContent = optStatusText(j);
+  st.className = "status " + (j.state === "done" ? "good" : j.state === "error" ? "bad" : "");
+  if (j.state === "running") { setTimeout(pollOptimize, 2000); return; }
+  document.getElementById("btn-opt").disabled = false;
+  if (j.log) {
+    const log = document.getElementById("opt-log");
+    log.style.display = "block"; log.textContent = j.log;
+  }
+  if (j.state === "done") refreshTables();
+}
+
+async function refreshTables() {
+  const r = await fetch("/api/tables");
+  const j = await r.json();
+  const heads = ["对比结果", "寻优汇总", "实验记录"];
+  const values = [j.comparison, j.summary, j.top10];
+  document.querySelectorAll("#sec-opt h3").forEach((h3, i) => {
+    let node = h3.nextElementSibling;
+    while (node && node.tagName !== "H3" && node.tagName !== "H2") {
+      const next = node.nextElementSibling;
+      if (node.tagName === "TABLE" || node.classList.contains("hint")) node.remove();
+      node = next;
+    }
+    const html = values[i] || "<p class='hint'>尚未生成，请先点击运行“参数寻优”。</p>";
+    h3.insertAdjacentHTML("afterend", html);
+  });
+  if (j.total !== null) document.getElementById("rec-total").textContent = "，共 " + j.total + " 条";
+}
+</script>
+</body>
+</html>
