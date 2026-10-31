@@ -7,6 +7,7 @@ import base64
 import io
 import json
 import os
+from html import escape
 
 import pandas as pd
 
@@ -22,9 +23,9 @@ METRIC_KEYS = ["总收益", "年化收益", "最大回撤", "夏普比率", "胜
 
 
 def fmt_metric(key, value):
-    """指标格式化; 缺失值 (None / NaN) 显示为 '-'"""
+    """指标格式化; 缺失值 (None / NaN) 显示为 '—'"""
     if value is None or value != value:
-        return "-"
+        return "—"
     return _fmt(key, value)
 
 
@@ -40,17 +41,47 @@ def _format_table(df):
         if df[col].dtype == object:
             continue
         if any(word in col for word in ("收益", "回撤", "胜率")):
-            df[col] = df[col].map(lambda v: "-" if pd.isna(v) else f"{v:.2%}")
+            df[col] = df[col].map(lambda v: "—" if pd.isna(v) else f"{v:.2%}")
         elif "夏普" in col:
-            df[col] = df[col].map(lambda v: "-" if pd.isna(v) else f"{v:.3f}")
+            df[col] = df[col].map(lambda v: "—" if pd.isna(v) else f"{v:.3f}")
         elif any(word in col for word in ("次数", "笔数", "组合数", "编号", "交易日数")):
-            df[col] = df[col].map(lambda v: "-" if pd.isna(v) else str(int(v)))
+            df[col] = df[col].map(lambda v: "—" if pd.isna(v) else str(int(v)))
     return df
 
 
+def _is_params_col(name):
+    """参数类长文本列: 参数列与 JSON 列"""
+    return str(name) == "参数" or "JSON" in str(name)
+
+
 def _table_html(df):
-    """DataFrame -> HTML 表格 (单元格内容已做 HTML 转义)"""
-    return _format_table(df).to_html(classes="data", index=False, border=0, escape=True)
+    """DataFrame -> HTML 表格 (单元格内容已做 HTML 转义, 带横向滚动容器)
+
+    数值列右对齐不换行; 参数列左对齐、等宽字体、允许换行并限制最大宽度。
+    """
+    numeric = {col: bool(pd.api.types.is_numeric_dtype(df[col])) for col in df.columns}
+    df = _format_table(df)
+
+    def cls(col, is_num):
+        if _is_params_col(col):
+            return "col-params"
+        return "col-num" if is_num else "col-text"
+
+    def text(value):
+        return "—" if pd.isna(value) else str(value)
+
+    parts = ['<div class="table-wrap"><table class="data"><thead><tr>']
+    for col in df.columns:
+        parts.append(f'<th class="{cls(col, numeric[col])}">{escape(str(col))}</th>')
+    parts.append("</tr></thead><tbody>")
+    for _, row in df.iterrows():
+        parts.append("<tr>")
+        for col in df.columns:
+            parts.append(f'<td class="{cls(col, numeric[col])}">'
+                         f'{escape(text(row[col]))}</td>')
+        parts.append("</tr>")
+    parts.append("</tbody></table></div>")
+    return "".join(parts)
 
 
 def load_best_params(records_dir=RECORDS_DIR):
@@ -151,7 +182,7 @@ def run_portfolio(codes=None, records_dir=RECORDS_DIR):
     bench_metrics = compute_metrics(bench_nav)
     bench_metrics["胜率"] = float("nan")
     bench_metrics["交易次数"] = float("nan")
-    rows.append({"name": f"{BENCHMARK_NAME}买入持有", "params": "基准",
+    rows.append({"name": f"{BENCHMARK_NAME}买入持有", "params": "—",
                  "metrics": format_metrics(bench_metrics)})
 
     chart = nav_chart_base64(navs, bench_nav, f"三策略净值对比 {DATA_START} ~ {DATA_END}")
