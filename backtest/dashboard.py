@@ -38,7 +38,7 @@ def _format_table(df):
     """把结果表格式化成便于展示的字符串表 (收益/回撤/胜率用百分比)"""
     df = df.copy()
     for col in df.columns:
-        if df[col].dtype == object:
+        if not pd.api.types.is_numeric_dtype(df[col]):
             continue
         if any(word in col for word in ("收益", "回撤", "胜率")):
             df[col] = df[col].map(lambda v: "—" if pd.isna(v) else f"{v:.2%}")
